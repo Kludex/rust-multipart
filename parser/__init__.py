@@ -1,9 +1,6 @@
-# pyright: reportUnusedImport=false
-from parser.parser import MultipartParser, MultipartState, MultipartPart, FormData
+from __future__ import annotations
 
+from parser.parser import FormData, MultipartParser, MultipartPart, MultipartState
+from parser.types import Field, File
 
-File = FormData.File
-Field = FormData.Field
-
-
-__all__ = ("MultipartParser", "MultipartState", "MultipartPart", "Field", "File")
+__all__ = ("Field", "File", "FormData", "MultipartParser", "MultipartPart", "MultipartState")
