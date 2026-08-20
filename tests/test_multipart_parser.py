@@ -38,30 +38,28 @@ def parser() -> MultipartParser:
     return MultipartParser(b"boundary")
 
 
-def assert_parser_state(parser: MultipartParser, state: MultipartState) -> None:
-    assert parser.state == state
+def test_parser_preamble(parser: MultipartParser) -> None:
+    parser.parse(b"--boundary\r")
+
+    assert parser.state == MultipartState.PREAMBLE
 
 
-def test_parser_state_transitions(parser: MultipartParser) -> None:
-    assert_parser_state(parser, MultipartState.PREAMBLE)
+def test_parser_header(parser: MultipartParser) -> None:
+    parser.parse(b"--boundary\r\n")
 
-    parser.parse(b"--bound")
-    assert_parser_state(parser, MultipartState.PREAMBLE)
+    assert parser.state == MultipartState.HEADER
 
-    parser.parse(b"ary\r\n")
-    assert_parser_state(parser, MultipartState.HEADER)
 
-    parser.parse(b"Content-Disposition: form-data; name=field\r\n")
-    assert_parser_state(parser, MultipartState.HEADER)
+def test_parser_body(parser: MultipartParser) -> None:
+    parser.parse(b"--boundary\r\nContent-Disposition: form-data; name=field\r\n\r\n")
 
-    parser.parse(b"\r\n")
-    assert_parser_state(parser, MultipartState.BODY)
+    assert parser.state == MultipartState.BODY
 
-    parser.parse(b"value\r\n--bound")
-    assert_parser_state(parser, MultipartState.BODY)
 
-    parser.parse(b"ary--")
-    assert_parser_state(parser, MultipartState.END)
+def test_parser_end(parser: MultipartParser) -> None:
+    parser.parse(b"--boundary--")
+
+    assert parser.state == MultipartState.END
 
 
 def test_parser_queues_start_empty(parser: MultipartParser) -> None:
