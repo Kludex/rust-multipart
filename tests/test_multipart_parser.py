@@ -33,10 +33,34 @@ def test_constructor_validation() -> None:
         MultipartParser(b"boundary", header_charset="ascii")
 
 
-def test_initial_state_and_empty_queues() -> None:
-    parser = MultipartParser(b"boundary")
+@pytest.fixture
+def parser() -> MultipartParser:
+    return MultipartParser(b"boundary")
 
+
+def test_parser_state_transitions(parser: MultipartParser) -> None:
     assert parser.state == MultipartState.PREAMBLE
+
+    parser.parse(b"--bound")
+    assert parser.state == MultipartState.PREAMBLE
+
+    parser.parse(b"ary\r\n")
+    assert parser.state == MultipartState.HEADER
+
+    parser.parse(b"Content-Disposition: form-data; name=field\r\n")
+    assert parser.state == MultipartState.HEADER
+
+    parser.parse(b"\r\n")
+    assert parser.state == MultipartState.BODY
+
+    parser.parse(b"value\r\n--bound")
+    assert parser.state == MultipartState.BODY
+
+    parser.parse(b"ary--")
+    assert parser.state == MultipartState.END
+
+
+def test_parser_queues_start_empty(parser: MultipartParser) -> None:
     assert parser.next_event() is None
     assert parser.next_part() is None
 
