@@ -1,18 +1,15 @@
 use pyo3::prelude::*;
 
+mod bindings;
 mod form_data;
 mod headers;
 mod multipart;
 
 #[pymodule]
-fn parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    pyo3_log::init();
-
-    m.add_class::<multipart::MultipartParser>()?;
-    m.add_class::<multipart::MultipartState>()?;
-    m.add_class::<multipart::MultipartPart>()?;
-
-    m.add_class::<form_data::FormData>()?;
-
+fn parser(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<bindings::PyMultipartParser>()?;
+    module.add_class::<bindings::PyMultipartState>()?;
+    module.add_class::<bindings::PyMultipartPart>()?;
+    module.add_class::<bindings::PyFormData>()?;
     Ok(())
 }

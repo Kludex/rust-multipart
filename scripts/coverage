@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+
+cargo llvm-cov clean --workspace
+cargo clean
+eval "$(cargo llvm-cov show-env --sh)"
+uv run maturin develop
+uv run coverage run -m pytest tests
+uv run coverage report
+uv run coverage xml
+# PyO3's generated FFI glue produces uncovered synthetic regions.
+cargo llvm-cov report --ignore-filename-regex "src/bindings.rs" --fail-under-lines 100
+cargo llvm-cov report --ignore-filename-regex "src/bindings.rs" --cobertura --output-path native-coverage.xml

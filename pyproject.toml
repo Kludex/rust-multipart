@@ -1,25 +1,49 @@
 [project]
 name = "parser"
 version = "0.1.0"
-description = "Add your description here"
+description = "A Sans-IO multipart/form-data parser"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
-
-[tool.uv]
-dev-dependencies = [
-    "coverage>=7.6.4",
-    "maturin>=1.7.4",
-    "pip>=24.2",
-    "pytest>=8.3.3",
-]
-
-[dependency-groups]
-docs = ["mkdocs-material", "mkdocs"]
 
 [build-system]
 requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
-[tool.ruff.per-file-ignores]
-"__init__.py" = ["F401"]
+[dependency-groups]
+dev = [
+    "coverage>=7.6.4",
+    "maturin>=1.7.4",
+    "mypy>=1.14.0",
+    "pip>=24.2",
+    "pytest>=8.3.3",
+    "pytest-codspeed>=4.2.0",
+    "ruff>=0.9.0",
+]
+docs = ["mkdocs-material>=9.5.0", "mkdocs>=1.6.0"]
+
+[tool.coverage.run]
+source_pkgs = ["parser", "tests"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = true
+
+[tool.mypy]
+strict = true
+files = ["parser", "tests", "benchmarks"]
+
+[tool.pytest.ini_options]
+addopts = ["--strict-config", "--strict-markers"]
+filterwarnings = ["error"]
+xfail_strict = true
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "FA", "UP", "RUF100"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
