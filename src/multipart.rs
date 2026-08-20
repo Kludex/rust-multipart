@@ -1,385 +1,285 @@
-//! Sans-IO parser for [RFC 7578](https://datatracker.ietf.org/doc/html/rfc7578) `multipart/form-data`.
+//! Sans-IO parser for [RFC 7578](https://www.rfc-editor.org/rfc/rfc7578.html) `multipart/form-data`.
 //!
-//! This parser works based on the following states:
-//!
-//! ```not-rust
-//! State 1: Preamble
-//!     State 2: Header
-//!     State 4: End (final)
-//! State 2: Header
-//!     State 3: Body
-//!     State 4: End (final)
-//! State 3: Body
-//!     State 2: Header
-//!     State 4: End (final)
-//! ```
+//! The parser transitions from the preamble to part headers, then to the part body. A body can start another part or
+//! finish the multipart message.
 
-use core::fmt;
-use std::{collections::HashMap, str};
+use std::collections::{HashMap, VecDeque};
+use std::str;
 
-use log::debug;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
-    types::PyBytes,
 };
 
 use crate::form_data::FormData;
 
-const CR: u8 = b'\r';
-const LF: u8 = b'\n';
-const CRLF: [u8; 2] = [CR, LF];
+const CRLF: &[u8] = b"\r\n";
 
-#[pyclass(eq, eq_int)]
 #[derive(Clone, PartialEq, Debug)]
 pub enum MultipartState {
-    #[pyo3(name = "PREAMBLE")]
     Preamble,
-    #[pyo3(name = "HEADER")]
     Header,
-    #[pyo3(name = "BODY")]
     Body,
-    #[pyo3(name = "END")]
     End,
 }
 
-#[derive(Debug, Clone, FromPyObject)]
-pub struct BytesWrapper(Vec<u8>);
-
-impl IntoPy<PyObject> for BytesWrapper {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyBytes::new_bound(py, &self.0).into_any().unbind()
-    }
-}
-
-impl fmt::Display for BytesWrapper {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self.0)
-    }
-}
-
-#[pyclass]
 #[derive(Debug, Clone)]
 pub enum MultipartPart {
     Header { name: String, value: String },
-    Body { data: BytesWrapper, complete: bool },
+    Body { data: Vec<u8>, complete: bool },
 }
 
 impl MultipartPart {
     fn build_header(data: &[u8]) -> PyResult<Self> {
-        let parts = match data.iter().position(|&c| c == b':') {
-            Some(index) => index,
-            None => return Err(PyValueError::new_err("Malformed header")),
-        };
-
-        let key = &data[..parts];
-        let value = &data[parts + 1..];
-
-        // TODO: The encoding should be determined by the HTTP Content-Type header.
-        let key = str::from_utf8(key).map_err(|_| PyValueError::new_err("Invalid key"))?.trim();
-        let value = str::from_utf8(value).map_err(|_| PyValueError::new_err("Invalid value"))?.trim();
-
-        Ok(MultipartPart::Header {
-            name: key.to_lowercase(),
+        let separator = data
+            .iter()
+            .position(|character| *character == b':')
+            .ok_or_else(|| PyValueError::new_err("Malformed header"))?;
+        let name = str::from_utf8(&data[..separator])
+            .map_err(|_| PyValueError::new_err("Invalid header name"))?
+            .trim();
+        let value = str::from_utf8(&data[separator + 1..])
+            .map_err(|_| PyValueError::new_err("Invalid header value"))?
+            .trim();
+        if name.is_empty() {
+            return Err(PyValueError::new_err("Missing header name"));
+        }
+        Ok(Self::Header {
+            name: name.to_ascii_lowercase(),
             value: value.to_string(),
         })
     }
 }
 
-#[pymethods]
-impl MultipartPart {
-    fn __repr__(&self) -> String {
-        match self {
-            Self::Header { name, value } => format!("Header(name=\"{name}\", value=\"{value}\")"),
-            Self::Body { data, complete } => format!("Body(data=\"{data}\", complete={complete})"),
-        }
-    }
+#[derive(Debug, PartialEq)]
+enum DelimiterSuffix {
+    Open(usize),
+    Close,
+    Incomplete,
+    Invalid,
+    BareLineFeed,
 }
 
-#[pyclass]
 pub struct MultipartParser {
-    _boundary: Vec<u8>,
     max_size: Option<usize>,
-
-    // TODO: How can I use `str` instead of `String` here?
-    /// The charset to use when decoding headers.
-    _header_charset: String,
-
-    _state: MultipartState,
-    _buffer: Vec<u8>,
-
-    /// The boundary with a leading `--`.
-    _dash_boundary: Vec<u8>,
-
-    /// The combination of CRLF + `--` + boundary.
-    _delimiter: Vec<u8>,
-
-    _offset: usize,
-    _events: Vec<MultipartPart>,
-    _need_data: bool,
-
-    /// The headers of the current part.
-    _current_headers: HashMap<String, String>,
-
-    /// The current part being parsed.
-    _current_part: Option<FormData>,
-
-    /// The parsed parts.
-    _parts: Vec<FormData>,
+    state: MultipartState,
+    buffer: Vec<u8>,
+    dash_boundary: Vec<u8>,
+    delimiter: Vec<u8>,
+    size: usize,
+    events: VecDeque<MultipartPart>,
+    current_headers: HashMap<String, String>,
+    current_part: Option<FormData>,
+    parts: VecDeque<FormData>,
 }
 
-#[pymethods]
 impl MultipartParser {
-    // TODO: Can `header_charset` be only `&str`?
-    #[new]
-    #[pyo3(signature = (boundary, max_size = None, header_charset = "utf8"))]
-    fn new(boundary: Vec<u8>, max_size: Option<usize>, header_charset: Option<&str>) -> PyResult<Self> {
-        // According to https://www.rfc-editor.org/rfc/rfc2046.html#section-5.1.1, the boundary
-        // should be between 1 and 70 bytes.
-        if boundary.len() < 1 || boundary.len() > 70 {
+    pub fn new(boundary: Vec<u8>, max_size: Option<usize>, header_charset: &str) -> PyResult<Self> {
+        // RFC 2046 section 5.1.1 limits boundary values to 70 characters.
+        if boundary.is_empty() || boundary.len() > 70 {
             return Err(PyValueError::new_err("Boundary length must be between 1 and 70 characters."));
         }
-
-        // TODO: Implement more header charset support.
-        if header_charset != Some("utf8") {
+        if header_charset != "utf8" {
             return Err(PyRuntimeError::new_err("The only supported charset is 'utf8'."));
         }
 
-        let _dash_boundary = [b"--".as_slice(), &boundary].concat();
-        let _delimiter = [b"\r\n".as_slice(), &_dash_boundary].concat();
-
-        Ok(MultipartParser {
-            _boundary: boundary,
-            max_size: max_size,
-            _header_charset: header_charset.unwrap_or("utf8").to_string(),
-            _state: MultipartState::Preamble,
-            _buffer: Vec::new(),
-            _dash_boundary,
-            _delimiter,
-            _offset: 0,
-            _events: Vec::new(),
-            _need_data: false,
-
-            _current_headers: HashMap::new(),
-            _current_part: None,
-            _parts: Vec::new(),
+        let dash_boundary = [b"--".as_slice(), &boundary].concat();
+        let delimiter = [CRLF, dash_boundary.as_slice()].concat();
+        Ok(Self {
+            max_size,
+            state: MultipartState::Preamble,
+            buffer: Vec::new(),
+            dash_boundary,
+            delimiter,
+            size: 0,
+            events: VecDeque::new(),
+            current_headers: HashMap::new(),
+            current_part: None,
+            parts: VecDeque::new(),
         })
     }
 
-    #[getter]
-    fn state(&self) -> PyResult<MultipartState> {
-        Ok(self._state.clone())
+    pub fn state(&self) -> MultipartState {
+        self.state.clone()
     }
 
-    fn parse(&mut self, data: Vec<u8>) -> PyResult<()> {
-        if self._state == MultipartState::End {
-            return Err(PyRuntimeError::new_err("Parser is in the end state."));
+    pub fn feed(&mut self, data: Vec<u8>) -> PyResult<()> {
+        if self.state == MultipartState::End {
+            return Ok(());
         }
-
-        if self.max_size.is_some() && self._buffer.len() + data.len() > self.max_size.unwrap() {
+        if self.max_size.is_some_and(|max_size| self.size.saturating_add(data.len()) > max_size) {
             return Err(PyRuntimeError::new_err("Data exceeds maximum size."));
         }
-
-        self._buffer.extend(data);
-        self._need_data = false;
+        self.size += data.len();
+        self.buffer.extend(data);
 
         loop {
-            self._state = match self._state {
-                MultipartState::Preamble => self.handle_preamble(),
-                MultipartState::Header => self.handle_header(),
-                MultipartState::Body => self.handle_body(),
-                MultipartState::End => break,
-            }?;
-
-            // TODO: Do we need create this `_need_data` flag?
-            if self._need_data {
-                break;
+            let progressed = match self.state {
+                MultipartState::Preamble => self.handle_preamble()?,
+                MultipartState::Header => self.handle_header()?,
+                MultipartState::Body => self.handle_body()?,
+                MultipartState::End => false,
+            };
+            if !progressed {
+                return Ok(());
             }
         }
-
-        Ok(())
     }
 
-    fn next_part(&mut self) -> PyResult<Option<FormData>> {
-        match self._parts.is_empty() {
-            true => Ok(None),
-            false => Ok(Some(self._parts.remove(0))),
-        }
+    pub fn next_part(&mut self) -> Option<FormData> {
+        self.parts.pop_front()
     }
 
-    fn next_event(&mut self) -> PyResult<Option<MultipartPart>> {
-        match self._events.is_empty() {
-            true => Ok(None),
-            false => Ok(Some(self._events.remove(0))),
-        }
+    pub fn next_event(&mut self) -> Option<MultipartPart> {
+        self.events.pop_front()
     }
-}
 
-impl MultipartParser {
-    fn handle_preamble(&mut self) -> PyResult<MultipartState> {
-        let delimiter = self._dash_boundary.clone();
-        let delimiter_len = delimiter.len();
-        let buffer = self._buffer[self._offset..].to_vec();
+    fn handle_preamble(&mut self) -> PyResult<bool> {
+        // RFC 2046 section 5.1.1 requires recipients to ignore text before the first boundary delimiter.
+        let mut search_from = 0;
+        while let Some(relative_index) = find_subslice(&self.buffer[search_from..], &self.dash_boundary) {
+            let index = search_from + relative_index;
+            let starts_line = index == 0 || (index >= 2 && self.buffer[index - 2..index] == *CRLF);
+            if !starts_line {
+                search_from = index + 1;
+                continue;
+            }
 
-        if let Some(index) = buffer.windows(delimiter_len).position(|window| window == delimiter) {
-            if let Some(after_delimiter) = buffer.get(index + delimiter_len..) {
-                let tail = after_delimiter.get(..2).unwrap_or_default();
-
-                // First delimiter found -> End of preamble
-                if tail == CRLF {
-                    self._offset += index + delimiter_len + 2;
-                    return Ok(MultipartState::Header);
+            match delimiter_suffix(&self.buffer, index + self.dash_boundary.len()) {
+                DelimiterSuffix::Open(consumed) => {
+                    self.buffer.drain(..consumed);
+                    self.state = MultipartState::Header;
+                    return Ok(true);
                 }
-
-                // First delimiter is terminator -> Empty multipart stream
-                if tail == b"--" {
-                    return Ok(MultipartState::End);
+                DelimiterSuffix::Close => {
+                    self.buffer.clear();
+                    self.state = MultipartState::End;
+                    return Ok(true);
                 }
-
-                // Bad newline after valid delimiter -> Broken client
-                if tail == b"\n" {
+                DelimiterSuffix::Incomplete => {
+                    self.buffer.drain(..index);
+                    return Ok(false);
+                }
+                DelimiterSuffix::Invalid => search_from = index + 1,
+                DelimiterSuffix::BareLineFeed => {
                     return Err(PyValueError::new_err("Invalid line break after delimiter"));
                 }
+            }
+        }
 
-                // CR found after delimiter, but next byte is not LF -> Move offset
-                if tail.len() > 1 && tail[0] == CR {
-                    self._offset += index + delimiter_len + 1;
-                    return Ok(MultipartState::Preamble);
+        let retained = self.dash_boundary.len() + 1;
+        if self.buffer.len() > retained {
+            self.buffer.drain(..self.buffer.len() - retained);
+        }
+        Ok(false)
+    }
+
+    fn handle_header(&mut self) -> PyResult<bool> {
+        if let Some(index) = find_subslice(&self.buffer, CRLF) {
+            let line = self.buffer[..index].to_vec();
+            self.buffer.drain(..index + CRLF.len());
+            if line.is_empty() {
+                self.current_part = Some(FormData::try_from(std::mem::take(&mut self.current_headers))?);
+                self.state = MultipartState::Body;
+            } else if let MultipartPart::Header { name, value } = MultipartPart::build_header(&line)? {
+                self.current_headers.insert(name.clone(), value.clone());
+                self.events.push_back(MultipartPart::Header { name, value });
+            }
+            return Ok(true);
+        }
+        if self.buffer.contains(&b'\n') {
+            return Err(PyValueError::new_err("Invalid line break in header"));
+        }
+        Ok(false)
+    }
+
+    fn handle_body(&mut self) -> PyResult<bool> {
+        let mut search_from = 0;
+        while let Some(relative_index) = find_subslice(&self.buffer[search_from..], &self.delimiter) {
+            let index = search_from + relative_index;
+            match delimiter_suffix(&self.buffer, index + self.delimiter.len()) {
+                DelimiterSuffix::Open(consumed) => {
+                    let data = self.buffer[..index].to_vec();
+                    self.finish_part(&data);
+                    self.buffer.drain(..consumed);
+                    self.state = MultipartState::Header;
+                    return Ok(true);
+                }
+                DelimiterSuffix::Close => {
+                    let data = self.buffer[..index].to_vec();
+                    self.finish_part(&data);
+                    self.buffer.clear();
+                    self.state = MultipartState::End;
+                    return Ok(true);
+                }
+                DelimiterSuffix::Incomplete => {
+                    let data = self.buffer[..index].to_vec();
+                    self.append_body(&data, false);
+                    self.buffer.drain(..index);
+                    return Ok(false);
+                }
+                DelimiterSuffix::Invalid => search_from = index + CRLF.len(),
+                DelimiterSuffix::BareLineFeed => {
+                    return Err(PyValueError::new_err("Invalid line break after delimiter"));
                 }
             }
         }
 
-        // Delimiter not found -> Skip data
-        self._offset = self._offset.max(self._buffer.len().saturating_sub(delimiter_len + 4));
-        self._need_data = true;
-        Ok(MultipartState::Preamble)
-    }
-
-    fn handle_header(&mut self) -> PyResult<MultipartState> {
-        let buffer = self._buffer[self._offset..].to_vec();
-
-        debug!("Buffer: {:?}", bytes_to_str(buffer.clone()));
-
-        // We are looking for a CRLF sequence to separate headers from body.
-        match buffer.windows(2).position(|window| window == CRLF) {
-            Some(index) => {
-                debug!("{:?}: header found at index: {}.", self._state, index);
-                // Empty line found, move to body
-                if index == 0 {
-                    self._offset = self._offset + 2;
-
-                    self._current_part = match FormData::try_from(self._current_headers.clone()) {
-                        Ok(part) => Some(part),
-                        Err(e) => return Err(e),
-                    };
-                    return Ok(MultipartState::Body);
-                } else {
-                    self._offset = self._offset + index + 2;
-                    match MultipartPart::build_header(&buffer[..index]) {
-                        Ok(MultipartPart::Header { name, value }) => {
-                            self._events.push(MultipartPart::Header {
-                                name: name.clone(),
-                                value: value.clone(),
-                            });
-                            self._current_headers.insert(name.clone(), value.clone());
-                            (name, value)
-                        }
-                        Err(e) => return Err(e),
-                        _ => return Err(PyValueError::new_err("Invalid header")),
-                    };
-
-                    return Ok(MultipartState::Header);
-                }
-            }
-            None => match buffer.windows(1).position(|window| window == &[LF]) {
-                Some(_) => {
-                    return Err(PyValueError::new_err("Invalid line break in header"));
-                }
-                // Wait for more data.
-                None => {
-                    self._need_data = true;
-                    Ok(MultipartState::Header)
-                }
-            },
+        let retained = self.delimiter.len() - 1;
+        if self.buffer.len() > retained {
+            let emitted = self.buffer.len() - retained;
+            let data = self.buffer[..emitted].to_vec();
+            self.append_body(&data, false);
+            self.buffer.drain(..emitted);
         }
+        Ok(false)
     }
 
-    fn handle_body(&mut self) -> PyResult<MultipartState> {
-        let buffer = self._buffer[self._offset..].to_vec();
-        let delimiter = self._delimiter.clone();
-        let delimiter_len = delimiter.len();
-
-        debug!("Buffer: {:?}", bytes_to_str(buffer.clone()));
-
-        match buffer.windows(delimiter.len()).position(|window| window == delimiter) {
-            Some(index) => {
-                debug!("{:?}: delimiter found at index: {}.", self._state, index);
-                match buffer.get(index + delimiter_len..index + delimiter_len + 2) {
-                    Some(tail) => match tail {
-                        [CR, LF] => {
-                            debug!("{:?}: delimiter is CRLF.", self._state);
-                            self._events.push(MultipartPart::Body {
-                                data: BytesWrapper(buffer[..index].to_vec()),
-                                complete: true,
-                            });
-                            self.insert_data(buffer[..index].to_vec(), true)?;
-                            self._offset += index + delimiter_len + 2;
-                            return Ok(MultipartState::Header);
-                        }
-                        // Delimiter was terminator, end of multipart stream.
-                        [b'-', b'-'] => {
-                            self.insert_data(buffer[..index].to_vec(), true)?;
-                            self._events.push(MultipartPart::Body {
-                                data: BytesWrapper(buffer[..index].to_vec()),
-                                complete: true,
-                            });
-                            self._offset += index + delimiter_len + 2;
-                            return Ok(MultipartState::End);
-                        }
-                        _ => {
-                            self._need_data = true;
-                            return Ok(MultipartState::Body);
-                        }
-                    },
-                    None => {
-                        self._need_data = true;
-                        return Ok(MultipartState::Body);
-                    }
-                };
-            }
-            None => {
-                // Delimiter not found, wait for more data.
-                debug!("{:?}: delimiter not found.", self._state);
-                if buffer.len() > delimiter_len + 3 {
-                    self.insert_data(buffer[..buffer.len() - (delimiter_len + 3)].to_vec(), false)?;
-                    self._events.push(MultipartPart::Body {
-                        data: BytesWrapper(buffer[..buffer.len() - (delimiter_len + 3)].to_vec()),
-                        complete: false,
-                    });
-                    self._offset = self._buffer.len() - (delimiter_len + 3);
-                }
-                self._need_data = true;
-                Ok(MultipartState::Body)
-            }
+    fn append_body(&mut self, data: &[u8], complete: bool) {
+        let part = self.current_part.as_mut().expect("body state requires a current part");
+        part.append_data(data);
+        if !data.is_empty() || complete {
+            self.events.push_back(MultipartPart::Body { data: data.to_vec(), complete });
         }
     }
 
-    fn insert_data(&mut self, data: Vec<u8>, complete: bool) -> PyResult<()> {
-        match self._current_part.take() {
-            Some(mut part) => {
-                part.append_data(data);
-
-                if complete {
-                    self._parts.push(part);
-                    self._current_part = None;
-                }
-            }
-            None => return Err(PyValueError::new_err("Missing current part")),
-        }
-        Ok(())
+    fn finish_part(&mut self, data: &[u8]) {
+        self.append_body(data, true);
+        self.parts.push_back(self.current_part.take().expect("body state requires a current part"));
     }
 }
 
-fn bytes_to_str(data: Vec<u8>) -> String {
-    String::from_utf8(data).unwrap()
+fn delimiter_suffix(buffer: &[u8], after_boundary: usize) -> DelimiterSuffix {
+    let tail = &buffer[after_boundary..];
+    if tail.is_empty() {
+        return DelimiterSuffix::Incomplete;
+    }
+    if tail.starts_with(b"--") {
+        return DelimiterSuffix::Close;
+    }
+    if tail[0] == b'-' {
+        return if tail.len() == 1 {
+            DelimiterSuffix::Incomplete
+        } else {
+            DelimiterSuffix::Invalid
+        };
+    }
+
+    // RFC 2046 section 5.1.1 permits linear whitespace between the boundary and CRLF.
+    let padding = tail.iter().take_while(|byte| matches!(byte, b' ' | b'\t')).count();
+    let line_ending = &tail[padding..];
+    if line_ending.is_empty() || line_ending == b"\r" {
+        return DelimiterSuffix::Incomplete;
+    }
+    if line_ending.starts_with(CRLF) {
+        return DelimiterSuffix::Open(after_boundary + padding + CRLF.len());
+    }
+    if line_ending[0] == b'\n' {
+        return DelimiterSuffix::BareLineFeed;
+    }
+    DelimiterSuffix::Invalid
+}
+
+fn find_subslice(data: &[u8], needle: &[u8]) -> Option<usize> {
+    data.windows(needle.len()).position(|window| window == needle)
 }

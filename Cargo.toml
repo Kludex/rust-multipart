@@ -10,10 +10,4 @@ name = "parser"
 crate-type = ["cdylib"]
 
 [dependencies]
-# TODO: Replace log by tracing.
-log = "0.4.22"
-pyo3 = { version = "0.22.5", features = [
-    "extension-module",
-    "auto-initialize",
-] }
-pyo3-log = "0.11.0"
+pyo3 = { version = "0.22.5", features = ["extension-module"] }
