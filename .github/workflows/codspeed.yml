@@ -10,6 +10,8 @@ on:
 jobs:
   benchmarks:
     runs-on: ubuntu-latest
+    env:
+      CODSPEED_TOKEN: ${{ secrets.CODSPEED_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,9 +28,14 @@ jobs:
       - name: Build extension
         run: uv run maturin develop --release
 
-      - name: Run benchmarks
+      - name: Run benchmarks with CodSpeed
+        if: env.CODSPEED_TOKEN != ''
         uses: CodSpeedHQ/action@v4
         with:
           mode: simulation
-          token: ${{ secrets.CODSPEED_TOKEN }}
+          token: ${{ env.CODSPEED_TOKEN }}
           run: uv run pytest benchmarks --codspeed
+
+      - name: Run benchmarks without upload
+        if: env.CODSPEED_TOKEN == ''
+        run: uv run pytest benchmarks --codspeed
