@@ -1,4 +1,4 @@
-# Rust Parser for `multipart/form-data`
+# rust-multipart
 
 > [!WARNING]
 > This project is a work in progress and is not ready for production use.
@@ -9,13 +9,13 @@ It is heavily inspired by [defnull/multipart](https://github.com/defnull/multipa
 ## Installation
 
 ```bash
-pip install multipart-parser
+pip install rust-multipart
 ```
 
 ## Usage
 
 ```python
-from parser import MultipartParser, PartBegin, PartData, PartEnd
+from rust_multipart import MultipartParser, PartBegin, PartData, PartEnd
 
 parser = MultipartParser(boundary=b"boundary")
 events = parser.feed(b'--boundary\r\nContent-Disposition: form-data; name="user"\r\n\r\nPotato\r\n--boundary--\r\n')
@@ -37,7 +37,7 @@ input ends: it raises `ValueError` if the closing boundary was never received.
 Use `parse_options_header()` to parse header values like `Content-Disposition`:
 
 ```python
-from parser import parse_options_header
+from rust_multipart import parse_options_header
 
 value, parameters = parse_options_header('form-data; name="user"')
 assert value == "form-data"

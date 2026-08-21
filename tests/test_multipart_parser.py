@@ -4,7 +4,7 @@ from collections.abc import Iterable
 
 import pytest
 
-from parser import MultipartParser, MultipartState, PartBegin, PartData, PartEnd
+from rust_multipart import MultipartParser, MultipartState, PartBegin, PartData, PartEnd
 
 Event = PartBegin | PartData | PartEnd
 

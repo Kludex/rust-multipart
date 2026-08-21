@@ -5,7 +5,7 @@ mod headers;
 mod multipart;
 
 #[pymodule]
-fn parser(module: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _multipart(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<bindings::PyMultipartParser>()?;
     module.add_class::<bindings::PyMultipartState>()?;
     module.add_class::<bindings::PyPartBegin>()?;

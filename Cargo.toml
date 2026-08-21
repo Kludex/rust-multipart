@@ -1,12 +1,12 @@
 [package]
-name = "parser"
+name = "rust-multipart"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 authors = ["Marcelo Trylesinski <marcelotryle@gmail.com>"]
 
 [lib]
-name = "parser"
+name = "_multipart"
 crate-type = ["cdylib"]
 
 [dependencies]
