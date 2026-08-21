@@ -169,6 +169,9 @@ impl MultipartParser {
                 return Err(PyRuntimeError::new_err("Part exceeds maximum header count."));
             }
             let line = &self.buffer[..index];
+            if memchr::memchr2(b'\r', b'\n', line).is_some() {
+                return Err(PyValueError::new_err("Invalid line break in header"));
+            }
             let separator = memchr::memchr(b':', line).ok_or_else(|| PyValueError::new_err("Malformed header"))?;
             let name = line[..separator].trim_ascii();
             if name.is_empty() {
