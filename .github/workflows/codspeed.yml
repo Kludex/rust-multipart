@@ -1,0 +1,41 @@
+name: CodSpeed
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  benchmarks:
+    runs-on: ubuntu-latest
+    env:
+      CODSPEED_TOKEN: ${{ secrets.CODSPEED_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Build extension
+        run: uv run maturin develop --release
+
+      - name: Run benchmarks with CodSpeed
+        if: env.CODSPEED_TOKEN != ''
+        uses: CodSpeedHQ/action@v4
+        with:
+          mode: simulation
+          token: ${{ env.CODSPEED_TOKEN }}
+          run: uv run pytest benchmarks --codspeed
+
+      - name: Run benchmarks without upload
+        if: env.CODSPEED_TOKEN == ''
+        run: uv run pytest benchmarks --codspeed
