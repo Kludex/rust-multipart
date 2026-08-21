@@ -10,4 +10,9 @@ name = "parser"
 crate-type = ["cdylib"]
 
 [dependencies]
+memchr = "2.8.3"
 pyo3 = { version = "0.22.5", features = ["extension-module"] }
+
+[profile.release]
+lto = true
+codegen-units = 1

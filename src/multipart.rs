@@ -1,21 +1,18 @@
 //! Sans-IO parser for [RFC 7578](https://www.rfc-editor.org/rfc/rfc7578.html) `multipart/form-data`.
 //!
 //! The parser transitions from the preamble to part headers, then to the part body. A body can start another part or
-//! finish the multipart message.
+//! finish the multipart message. Each `feed()` call returns the batch of events produced by that input. The parser
+//! never accumulates part bodies: callers own storage, limits, and decoding.
 
-use std::collections::{HashMap, VecDeque};
-use std::str;
-
+use memchr::memmem;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
 };
 
-use crate::form_data::FormData;
-
 const CRLF: &[u8] = b"\r\n";
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum MultipartState {
     Preamble,
     Header,
@@ -24,31 +21,10 @@ pub enum MultipartState {
 }
 
 #[derive(Debug, Clone)]
-pub enum MultipartPart {
-    Header { name: String, value: String },
-    Body { data: Vec<u8>, complete: bool },
-}
-
-impl MultipartPart {
-    fn build_header(data: &[u8]) -> PyResult<Self> {
-        let separator = data
-            .iter()
-            .position(|character| *character == b':')
-            .ok_or_else(|| PyValueError::new_err("Malformed header"))?;
-        let name = str::from_utf8(&data[..separator])
-            .map_err(|_| PyValueError::new_err("Invalid header name"))?
-            .trim();
-        let value = str::from_utf8(&data[separator + 1..])
-            .map_err(|_| PyValueError::new_err("Invalid header value"))?
-            .trim();
-        if name.is_empty() {
-            return Err(PyValueError::new_err("Missing header name"));
-        }
-        Ok(Self::Header {
-            name: name.to_ascii_lowercase(),
-            value: value.to_string(),
-        })
-    }
+pub enum MultipartEvent {
+    PartBegin { headers: Vec<(Vec<u8>, Vec<u8>)> },
+    PartData { data: Vec<u8> },
+    PartEnd,
 }
 
 #[derive(Debug, PartialEq)]
@@ -65,79 +41,77 @@ pub struct MultipartParser {
     state: MultipartState,
     buffer: Vec<u8>,
     dash_boundary: Vec<u8>,
-    delimiter: Vec<u8>,
+    delimiter_length: usize,
+    // Boxed: the x86_64 SIMD searcher is over-aligned beyond what Python's object allocator guarantees.
+    dash_boundary_finder: Box<memmem::Finder<'static>>,
+    delimiter_finder: Box<memmem::Finder<'static>>,
     size: usize,
-    events: VecDeque<MultipartPart>,
-    current_headers: HashMap<String, String>,
-    current_part: Option<FormData>,
-    parts: VecDeque<FormData>,
+    current_headers: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 impl MultipartParser {
-    pub fn new(boundary: Vec<u8>, max_size: Option<usize>, header_charset: &str) -> PyResult<Self> {
+    pub fn new(boundary: Vec<u8>, max_size: Option<usize>) -> PyResult<Self> {
         // RFC 2046 section 5.1.1 limits boundary values to 70 characters.
         if boundary.is_empty() || boundary.len() > 70 {
             return Err(PyValueError::new_err("Boundary length must be between 1 and 70 characters."));
         }
-        if header_charset != "utf8" {
-            return Err(PyRuntimeError::new_err("The only supported charset is 'utf8'."));
-        }
 
         let dash_boundary = [b"--".as_slice(), &boundary].concat();
         let delimiter = [CRLF, dash_boundary.as_slice()].concat();
+        let dash_boundary_finder = Box::new(memmem::Finder::new(&dash_boundary).into_owned());
+        let delimiter_finder = Box::new(memmem::Finder::new(&delimiter).into_owned());
         Ok(Self {
             max_size,
             state: MultipartState::Preamble,
             buffer: Vec::new(),
             dash_boundary,
-            delimiter,
+            delimiter_length: delimiter.len(),
+            dash_boundary_finder,
+            delimiter_finder,
             size: 0,
-            events: VecDeque::new(),
-            current_headers: HashMap::new(),
-            current_part: None,
-            parts: VecDeque::new(),
+            current_headers: Vec::new(),
         })
     }
 
     pub fn state(&self) -> MultipartState {
-        self.state.clone()
+        self.state
     }
 
-    pub fn feed(&mut self, data: Vec<u8>) -> PyResult<()> {
+    pub fn feed(&mut self, data: &[u8]) -> PyResult<Vec<MultipartEvent>> {
+        let mut events = Vec::new();
         if self.state == MultipartState::End {
-            return Ok(());
+            return Ok(events);
         }
         if self.max_size.is_some_and(|max_size| self.size.saturating_add(data.len()) > max_size) {
             return Err(PyRuntimeError::new_err("Data exceeds maximum size."));
         }
         self.size += data.len();
-        self.buffer.extend(data);
+        self.buffer.extend_from_slice(data);
 
         loop {
             let progressed = match self.state {
                 MultipartState::Preamble => self.handle_preamble()?,
-                MultipartState::Header => self.handle_header()?,
-                MultipartState::Body => self.handle_body()?,
+                MultipartState::Header => self.handle_header(&mut events)?,
+                MultipartState::Body => self.handle_body(&mut events)?,
                 MultipartState::End => false,
             };
             if !progressed {
-                return Ok(());
+                return Ok(events);
             }
         }
     }
 
-    pub fn next_part(&mut self) -> Option<FormData> {
-        self.parts.pop_front()
-    }
-
-    pub fn next_event(&mut self) -> Option<MultipartPart> {
-        self.events.pop_front()
+    pub fn finish(&self) -> PyResult<()> {
+        if self.state != MultipartState::End {
+            return Err(PyValueError::new_err("Incomplete multipart message: closing boundary not received."));
+        }
+        Ok(())
     }
 
     fn handle_preamble(&mut self) -> PyResult<bool> {
         // RFC 2046 section 5.1.1 requires recipients to ignore text before the first boundary delimiter.
         let mut search_from = 0;
-        while let Some(relative_index) = find_subslice(&self.buffer[search_from..], &self.dash_boundary) {
+        while let Some(relative_index) = self.dash_boundary_finder.find(&self.buffer[search_from..]) {
             let index = search_from + relative_index;
             let starts_line = index == 0 || (index >= 2 && self.buffer[index - 2..index] == *CRLF);
             if !starts_line {
@@ -174,17 +148,25 @@ impl MultipartParser {
         Ok(false)
     }
 
-    fn handle_header(&mut self) -> PyResult<bool> {
-        if let Some(index) = find_subslice(&self.buffer, CRLF) {
-            let line = self.buffer[..index].to_vec();
-            self.buffer.drain(..index + CRLF.len());
-            if line.is_empty() {
-                self.current_part = Some(FormData::try_from(std::mem::take(&mut self.current_headers))?);
+    fn handle_header(&mut self, events: &mut Vec<MultipartEvent>) -> PyResult<bool> {
+        if let Some(index) = memmem::find(&self.buffer, CRLF) {
+            if index == 0 {
+                self.buffer.drain(..CRLF.len());
+                events.push(MultipartEvent::PartBegin {
+                    headers: std::mem::take(&mut self.current_headers),
+                });
                 self.state = MultipartState::Body;
-            } else if let MultipartPart::Header { name, value } = MultipartPart::build_header(&line)? {
-                self.current_headers.insert(name.clone(), value.clone());
-                self.events.push_back(MultipartPart::Header { name, value });
+                return Ok(true);
             }
+            let line = &self.buffer[..index];
+            let separator = memchr::memchr(b':', line).ok_or_else(|| PyValueError::new_err("Malformed header"))?;
+            let name = line[..separator].trim_ascii();
+            if name.is_empty() {
+                return Err(PyValueError::new_err("Missing header name"));
+            }
+            let value = line[separator + 1..].trim_ascii();
+            self.current_headers.push((name.to_vec(), value.to_vec()));
+            self.buffer.drain(..index + CRLF.len());
             return Ok(true);
         }
         if self.buffer.contains(&b'\n') {
@@ -193,28 +175,27 @@ impl MultipartParser {
         Ok(false)
     }
 
-    fn handle_body(&mut self) -> PyResult<bool> {
+    fn handle_body(&mut self, events: &mut Vec<MultipartEvent>) -> PyResult<bool> {
         let mut search_from = 0;
-        while let Some(relative_index) = find_subslice(&self.buffer[search_from..], &self.delimiter) {
+        while let Some(relative_index) = self.delimiter_finder.find(&self.buffer[search_from..]) {
             let index = search_from + relative_index;
-            match delimiter_suffix(&self.buffer, index + self.delimiter.len()) {
+            match delimiter_suffix(&self.buffer, index + self.delimiter_length) {
                 DelimiterSuffix::Open(consumed) => {
-                    let data = self.buffer[..index].to_vec();
-                    self.finish_part(&data);
+                    self.emit_data(events, index);
+                    events.push(MultipartEvent::PartEnd);
                     self.buffer.drain(..consumed);
                     self.state = MultipartState::Header;
                     return Ok(true);
                 }
                 DelimiterSuffix::Close => {
-                    let data = self.buffer[..index].to_vec();
-                    self.finish_part(&data);
+                    self.emit_data(events, index);
+                    events.push(MultipartEvent::PartEnd);
                     self.buffer.clear();
                     self.state = MultipartState::End;
                     return Ok(true);
                 }
                 DelimiterSuffix::Incomplete => {
-                    let data = self.buffer[..index].to_vec();
-                    self.append_body(&data, false);
+                    self.emit_data(events, index);
                     self.buffer.drain(..index);
                     return Ok(false);
                 }
@@ -225,27 +206,21 @@ impl MultipartParser {
             }
         }
 
-        let retained = self.delimiter.len() - 1;
+        let retained = self.delimiter_length - 1;
         if self.buffer.len() > retained {
             let emitted = self.buffer.len() - retained;
-            let data = self.buffer[..emitted].to_vec();
-            self.append_body(&data, false);
+            self.emit_data(events, emitted);
             self.buffer.drain(..emitted);
         }
         Ok(false)
     }
 
-    fn append_body(&mut self, data: &[u8], complete: bool) {
-        let part = self.current_part.as_mut().expect("body state requires a current part");
-        part.append_data(data);
-        if !data.is_empty() || complete {
-            self.events.push_back(MultipartPart::Body { data: data.to_vec(), complete });
+    fn emit_data(&self, events: &mut Vec<MultipartEvent>, length: usize) {
+        if length > 0 {
+            events.push(MultipartEvent::PartData {
+                data: self.buffer[..length].to_vec(),
+            });
         }
-    }
-
-    fn finish_part(&mut self, data: &[u8]) {
-        self.append_body(data, true);
-        self.parts.push_back(self.current_part.take().expect("body state requires a current part"));
     }
 }
 
@@ -278,8 +253,4 @@ fn delimiter_suffix(buffer: &[u8], after_boundary: usize) -> DelimiterSuffix {
         return DelimiterSuffix::BareLineFeed;
     }
     DelimiterSuffix::Invalid
-}
-
-fn find_subslice(data: &[u8], needle: &[u8]) -> Option<usize> {
-    data.windows(needle.len()).position(|window| window == needle)
 }
