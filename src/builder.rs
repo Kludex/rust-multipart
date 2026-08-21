@@ -148,6 +148,9 @@ impl MultipartBuilder {
     }
 
     pub fn add_part(&mut self, headers: &[(Vec<u8>, Vec<u8>)], data: &[u8]) -> PyResult<()> {
+        if self.finished {
+            return Err(PyRuntimeError::new_err("Builder already finished."));
+        }
         let prologue = self.render_part(headers)?;
         self.append(prologue, data)
     }

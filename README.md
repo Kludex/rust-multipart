@@ -59,7 +59,8 @@ assert body.startswith(b'--boundary\r\nContent-Disposition: form-data; name="use
 ```
 
 Omit `boundary` and the builder generates a random 32-character one, available as `builder.boundary`. Names and
-filenames are escaped with the WHATWG HTML5 form rules (`"` and control characters become `%XX`, `\` is doubled),
+filenames are escaped with the WHATWG HTML5 form rules (`"` and control characters other than `\x1b` become `%XX`,
+`\` is doubled),
 matching how browsers and HTTP clients like HTTPX serialize form submissions. `add_part()` takes raw headers when
 you need full control, and `build()` appends the closing boundary and returns the complete body.
 

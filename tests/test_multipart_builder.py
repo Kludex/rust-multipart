@@ -88,6 +88,8 @@ def test_rejects_use_after_build() -> None:
     with pytest.raises(RuntimeError, match="finished"):
         builder.add_field("a", b"1")
     with pytest.raises(RuntimeError, match="finished"):
+        builder.add_part([(b"Name", b"bad\r\nvalue")], b"data")
+    with pytest.raises(RuntimeError, match="finished"):
         builder.build()
 
 
