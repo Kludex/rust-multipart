@@ -2,7 +2,7 @@ use pyo3::{prelude::*, types::PyBytes};
 
 use crate::multipart::{MultipartEvent, MultipartParser, MultipartState};
 
-#[pyclass(name = "MultipartState", eq, eq_int)]
+#[pyclass(name = "MultipartState", eq, eq_int, skip_from_py_object)]
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum PyMultipartState {
     #[pyo3(name = "PREAMBLE")]
@@ -67,19 +67,19 @@ impl PyPartEnd {
     }
 }
 
-fn event_to_py(py: Python<'_>, event: MultipartEvent) -> PyResult<PyObject> {
+fn event_to_py(py: Python<'_>, event: MultipartEvent) -> PyResult<Py<PyAny>> {
     let object = match event {
         MultipartEvent::PartBegin { headers } => {
             let headers = headers
                 .into_iter()
-                .map(|(name, value)| (PyBytes::new_bound(py, &name).unbind(), PyBytes::new_bound(py, &value).unbind()))
+                .map(|(name, value)| (PyBytes::new(py, &name).unbind(), PyBytes::new(py, &value).unbind()))
                 .collect();
             Bound::new(py, PyPartBegin { headers })?.into_any()
         }
         MultipartEvent::PartData { data } => Bound::new(
             py,
             PyPartData {
-                data: PyBytes::new_bound(py, &data).unbind(),
+                data: PyBytes::new(py, &data).unbind(),
             },
         )?
         .into_any(),
@@ -108,7 +108,7 @@ impl PyMultipartParser {
         self.parser.state().into()
     }
 
-    fn feed(&mut self, py: Python<'_>, data: &[u8]) -> PyResult<Vec<PyObject>> {
+    fn feed(&mut self, py: Python<'_>, data: &[u8]) -> PyResult<Vec<Py<PyAny>>> {
         self.parser.feed(data)?.into_iter().map(|event| event_to_py(py, event)).collect()
     }
 
