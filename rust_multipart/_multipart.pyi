@@ -24,6 +24,7 @@ class MultipartParser:
     def __init__(
         self,
         boundary: bytes,
+        *,
         max_size: int | None = None,
         max_header_count: int = 8,
         max_header_size: int = 4224,
