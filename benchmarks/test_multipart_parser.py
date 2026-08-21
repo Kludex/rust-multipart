@@ -25,7 +25,7 @@ def build_form_fields(count: int) -> bytes:
 LARGE_PAYLOAD = bytes(range(256)) * 4096
 LARGE_UPLOAD = build_file_upload(LARGE_PAYLOAD)
 # Worst case for boundary search: the payload is full of near-boundary prefixes.
-WORST_CASE_PAYLOAD = (b"\r\n--" + BOUNDARY[:-1] + b"!") * (1024 * 1024 // (len(BOUNDARY) + 3))
+WORST_CASE_PAYLOAD = (b"\r\n--" + BOUNDARY[:-1] + b"!") * (1024 * 1024 // (len(BOUNDARY) + 4))
 WORST_CASE_UPLOAD = build_file_upload(WORST_CASE_PAYLOAD)
 SMALL_FIELDS = build_form_fields(1000)
 

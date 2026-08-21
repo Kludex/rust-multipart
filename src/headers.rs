@@ -48,10 +48,14 @@ pub fn parse_options_header(value: &str) -> PyResult<(String, HashMap<String, St
                 return Err(PyValueError::new_err("Malformed quoted parameter"));
             }
             let mut parameter = String::new();
-            let mut characters = raw_value[1..raw_value.len() - 1].chars();
-            while let Some(character) = characters.next() {
-                if character == '\\' {
-                    parameter.push(characters.next().ok_or(PyValueError::new_err("Malformed quoted parameter"))?);
+            let mut escaped = false;
+            // A trailing escape inside quotes is already rejected by the quoted/escaped scan above.
+            for character in raw_value[1..raw_value.len() - 1].chars() {
+                if escaped {
+                    parameter.push(character);
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
                 } else {
                     parameter.push(character);
                 }
