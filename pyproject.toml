@@ -1,6 +1,6 @@
 [project]
 name = "rust-multipart"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A Sans-IO multipart/form-data parser"
 readme = "README.md"
 requires-python = ">=3.10"
