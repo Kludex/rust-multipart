@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from parser import parse_options_header
+from rust_multipart import parse_options_header
 
 
 def test_parses_value_and_parameters() -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pytest_codspeed import BenchmarkFixture
 
-from parser import MultipartParser, PartData
+from rust_multipart import MultipartParser, PartData
 
 BOUNDARY = b"benchmark-boundary"
 CHUNK_SIZE = 64 * 1024

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from parser.parser import (
+from rust_multipart._multipart import (
     MultipartParser,
     MultipartState,
     PartBegin,
