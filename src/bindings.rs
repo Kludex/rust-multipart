@@ -96,10 +96,10 @@ pub struct PyMultipartParser {
 #[pymethods]
 impl PyMultipartParser {
     #[new]
-    #[pyo3(signature = (boundary, max_size = None))]
-    fn new(boundary: Vec<u8>, max_size: Option<usize>) -> PyResult<Self> {
+    #[pyo3(signature = (boundary, max_size = None, max_header_count = 8, max_header_size = 4224))]
+    fn new(boundary: Vec<u8>, max_size: Option<usize>, max_header_count: usize, max_header_size: usize) -> PyResult<Self> {
         Ok(Self {
-            parser: MultipartParser::new(boundary, max_size)?,
+            parser: MultipartParser::new(boundary, max_size, max_header_count, max_header_size)?,
         })
     }
 

@@ -38,6 +38,8 @@ enum DelimiterSuffix {
 
 pub struct MultipartParser {
     max_size: Option<usize>,
+    max_header_count: usize,
+    max_header_size: usize,
     state: MultipartState,
     buffer: Vec<u8>,
     dash_boundary: Vec<u8>,
@@ -50,7 +52,7 @@ pub struct MultipartParser {
 }
 
 impl MultipartParser {
-    pub fn new(boundary: Vec<u8>, max_size: Option<usize>) -> PyResult<Self> {
+    pub fn new(boundary: Vec<u8>, max_size: Option<usize>, max_header_count: usize, max_header_size: usize) -> PyResult<Self> {
         // RFC 2046 section 5.1.1 limits boundary values to 70 characters.
         if boundary.is_empty() || boundary.len() > 70 {
             return Err(PyValueError::new_err("Boundary length must be between 1 and 70 characters."));
@@ -62,6 +64,8 @@ impl MultipartParser {
         let delimiter_finder = Box::new(memmem::Finder::new(&delimiter).into_owned());
         Ok(Self {
             max_size,
+            max_header_count,
+            max_header_size,
             state: MultipartState::Preamble,
             buffer: Vec::new(),
             dash_boundary,
@@ -158,6 +162,12 @@ impl MultipartParser {
                 self.state = MultipartState::Body;
                 return Ok(true);
             }
+            if index > self.max_header_size {
+                return Err(PyRuntimeError::new_err("Header line exceeds maximum size."));
+            }
+            if self.current_headers.len() == self.max_header_count {
+                return Err(PyRuntimeError::new_err("Part exceeds maximum header count."));
+            }
             let line = &self.buffer[..index];
             let separator = memchr::memchr(b':', line).ok_or_else(|| PyValueError::new_err("Malformed header"))?;
             let name = line[..separator].trim_ascii();
@@ -171,6 +181,9 @@ impl MultipartParser {
         }
         if self.buffer.contains(&b'\n') {
             return Err(PyValueError::new_err("Invalid line break in header"));
+        }
+        if self.buffer.len() > self.max_header_size {
+            return Err(PyRuntimeError::new_err("Header line exceeds maximum size."));
         }
         Ok(false)
     }
