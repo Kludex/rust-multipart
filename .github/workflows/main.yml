@@ -18,12 +18,12 @@ jobs:
         with:
           enable-cache: true
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --group dev
 
-      - name: Build extension
-        run: uv run maturin develop
-
-      - name: Run tests
-        run: uv run pytest -q
+      - name: Run checks
+        run: scripts/check
