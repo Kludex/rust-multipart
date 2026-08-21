@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
+use pyo3::{exceptions::PyValueError, prelude::*};
+
 /// Parse a MIME-style header value and its parameters.
 ///
 /// Quoted parameter values follow [RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1).
-pub fn parse_options_header(value: &str) -> Result<(String, HashMap<String, String>), String> {
+#[pyfunction]
+pub fn parse_options_header(value: &str) -> PyResult<(String, HashMap<String, String>)> {
     let mut segments = Vec::new();
     let mut start = 0;
     let mut quoted = false;
@@ -22,33 +25,33 @@ pub fn parse_options_header(value: &str) -> Result<(String, HashMap<String, Stri
         }
     }
     if quoted || escaped {
-        return Err("Malformed quoted parameter".to_string());
+        return Err(PyValueError::new_err("Malformed quoted parameter"));
     }
     segments.push(&value[start..]);
 
     let name = segments.remove(0).trim();
     if name.is_empty() {
-        return Err("Missing header name".to_string());
+        return Err(PyValueError::new_err("Missing header name"));
     }
 
     let mut parameters = HashMap::new();
     for segment in segments {
-        let (key, raw_value) = segment.split_once('=').ok_or("Missing parameter value")?;
+        let (key, raw_value) = segment.split_once('=').ok_or_else(|| PyValueError::new_err("Missing parameter value"))?;
         let key = key.trim();
         if key.is_empty() {
-            return Err("Missing parameter key".to_string());
+            return Err(PyValueError::new_err("Missing parameter key"));
         }
 
         let raw_value = raw_value.trim();
         let parameter = if raw_value.starts_with('"') {
             if raw_value.len() < 2 || !raw_value.ends_with('"') {
-                return Err("Malformed quoted parameter".to_string());
+                return Err(PyValueError::new_err("Malformed quoted parameter"));
             }
             let mut parameter = String::new();
             let mut characters = raw_value[1..raw_value.len() - 1].chars();
             while let Some(character) = characters.next() {
                 if character == '\\' {
-                    parameter.push(characters.next().ok_or("Malformed quoted parameter")?);
+                    parameter.push(characters.next().ok_or(PyValueError::new_err("Malformed quoted parameter"))?);
                 } else {
                     parameter.push(character);
                 }

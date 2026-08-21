@@ -15,19 +15,34 @@ pip install multipart-parser
 ## Usage
 
 ```python
-from parser import Field, MultipartParser
+from parser import MultipartParser, PartBegin, PartData, PartEnd
 
 parser = MultipartParser(boundary=b"boundary")
-parser.parse(b'--boundary\r\nContent-Disposition: form-data; name="user"\r\n\r\nPotato\r\n--boundary--\r\n')
+events = parser.feed(b'--boundary\r\nContent-Disposition: form-data; name="user"\r\n\r\nPotato\r\n--boundary--\r\n')
+parser.finish()
 
-field = parser.next_part()
-assert isinstance(field, Field)
-assert field.name == "user"
-assert field.data == b"Potato"
+begin, data, end = events
+assert isinstance(begin, PartBegin)
+assert begin.headers == [(b"Content-Disposition", b'form-data; name="user"')]
+assert isinstance(data, PartData)
+assert data.data == b"Potato"
+assert isinstance(end, PartEnd)
 ```
 
-You can call `parse()` repeatedly with partial input. The parser preserves binary part data and emits completed parts through
-`next_part()`.
+You can call `feed()` repeatedly with partial input. Each call returns the batch of events produced by that chunk:
+`PartBegin` carries the ordered raw byte headers, `PartData` carries a body chunk, and `PartEnd` closes the part. The
+parser never accumulates part bodies, so memory stays bounded regardless of upload size. Call `finish()` once the
+input ends: it raises `ValueError` if the closing boundary was never received.
+
+Use `parse_options_header()` to parse header values like `Content-Disposition`:
+
+```python
+from parser import parse_options_header
+
+value, parameters = parse_options_header('form-data; name="user"')
+assert value == "form-data"
+assert parameters == {"name": "user"}
+```
 
 ## Development
 

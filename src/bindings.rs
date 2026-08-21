@@ -1,21 +1,9 @@
 use pyo3::{prelude::*, types::PyBytes};
 
-use crate::{
-    form_data::FormData,
-    multipart::{MultipartParser, MultipartPart, MultipartState},
-};
-
-#[derive(Debug, Clone, FromPyObject)]
-pub struct BytesWrapper(Vec<u8>);
-
-impl IntoPy<PyObject> for BytesWrapper {
-    fn into_py(self, py: Python<'_>) -> PyObject {
-        PyBytes::new_bound(py, &self.0).into_any().unbind()
-    }
-}
+use crate::multipart::{MultipartEvent, MultipartParser, MultipartState};
 
 #[pyclass(name = "MultipartState", eq, eq_int)]
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum PyMultipartState {
     #[pyo3(name = "PREAMBLE")]
     Preamble,
@@ -38,82 +26,66 @@ impl From<MultipartState> for PyMultipartState {
     }
 }
 
-#[pyclass(name = "MultipartPart")]
-#[derive(Debug, Clone)]
-pub enum PyMultipartPart {
-    Header { name: String, value: String },
-    Body { data: BytesWrapper, complete: bool },
-}
-
-impl From<MultipartPart> for PyMultipartPart {
-    fn from(part: MultipartPart) -> Self {
-        match part {
-            MultipartPart::Header { name, value } => Self::Header { name, value },
-            MultipartPart::Body { data, complete } => Self::Body {
-                data: BytesWrapper(data),
-                complete,
-            },
-        }
-    }
+#[pyclass(name = "PartBegin", frozen)]
+pub struct PyPartBegin {
+    #[pyo3(get)]
+    headers: Vec<(Py<PyBytes>, Py<PyBytes>)>,
 }
 
 #[pymethods]
-impl PyMultipartPart {
-    fn __repr__(&self) -> String {
-        match self {
-            Self::Header { name, value } => format!("Header(name={name:?}, value={value:?})"),
-            Self::Body { data, complete } => format!("Body(data={:?}, complete={complete})", data.0),
-        }
+impl PyPartBegin {
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let headers: PyResult<Vec<String>> = self
+            .headers
+            .iter()
+            .map(|(name, value)| Ok(format!("({}, {})", name.bind(py).repr()?, value.bind(py).repr()?)))
+            .collect();
+        Ok(format!("PartBegin(headers=[{}])", headers?.join(", ")))
     }
 }
 
-#[pyclass(name = "FormData")]
-#[derive(Debug, Clone)]
-pub enum PyFormData {
-    Field {
-        name: String,
-        content_type: String,
-        charset: String,
-        data: BytesWrapper,
-    },
-    File {
-        name: String,
-        filename: String,
-        content_type: String,
-        charset: String,
-        data: BytesWrapper,
-    },
+#[pyclass(name = "PartData", frozen)]
+pub struct PyPartData {
+    #[pyo3(get)]
+    data: Py<PyBytes>,
 }
 
-impl From<FormData> for PyFormData {
-    fn from(part: FormData) -> Self {
-        match part {
-            FormData::Field {
-                name,
-                content_type,
-                charset,
-                data,
-            } => Self::Field {
-                name,
-                content_type,
-                charset,
-                data: BytesWrapper(data),
-            },
-            FormData::File {
-                name,
-                filename,
-                content_type,
-                charset,
-                data,
-            } => Self::File {
-                name,
-                filename,
-                content_type,
-                charset,
-                data: BytesWrapper(data),
-            },
-        }
+#[pymethods]
+impl PyPartData {
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!("PartData(data={})", self.data.bind(py).repr()?))
     }
+}
+
+#[pyclass(name = "PartEnd", frozen)]
+pub struct PyPartEnd;
+
+#[pymethods]
+impl PyPartEnd {
+    fn __repr__(&self) -> &'static str {
+        "PartEnd()"
+    }
+}
+
+fn event_to_py(py: Python<'_>, event: MultipartEvent) -> PyResult<PyObject> {
+    let object = match event {
+        MultipartEvent::PartBegin { headers } => {
+            let headers = headers
+                .into_iter()
+                .map(|(name, value)| (PyBytes::new_bound(py, &name).unbind(), PyBytes::new_bound(py, &value).unbind()))
+                .collect();
+            Bound::new(py, PyPartBegin { headers })?.into_any()
+        }
+        MultipartEvent::PartData { data } => Bound::new(
+            py,
+            PyPartData {
+                data: PyBytes::new_bound(py, &data).unbind(),
+            },
+        )?
+        .into_any(),
+        MultipartEvent::PartEnd => Bound::new(py, PyPartEnd)?.into_any(),
+    };
+    Ok(object.unbind())
 }
 
 #[pyclass(name = "MultipartParser")]
@@ -124,10 +96,10 @@ pub struct PyMultipartParser {
 #[pymethods]
 impl PyMultipartParser {
     #[new]
-    #[pyo3(signature = (boundary, max_size = None, header_charset = "utf8"))]
-    fn new(boundary: Vec<u8>, max_size: Option<usize>, header_charset: &str) -> PyResult<Self> {
+    #[pyo3(signature = (boundary, max_size = None))]
+    fn new(boundary: Vec<u8>, max_size: Option<usize>) -> PyResult<Self> {
         Ok(Self {
-            parser: MultipartParser::new(boundary, max_size, header_charset)?,
+            parser: MultipartParser::new(boundary, max_size)?,
         })
     }
 
@@ -136,15 +108,11 @@ impl PyMultipartParser {
         self.parser.state().into()
     }
 
-    fn parse(&mut self, data: Vec<u8>) -> PyResult<()> {
-        self.parser.feed(data)
+    fn feed(&mut self, py: Python<'_>, data: &[u8]) -> PyResult<Vec<PyObject>> {
+        self.parser.feed(data)?.into_iter().map(|event| event_to_py(py, event)).collect()
     }
 
-    fn next_part(&mut self) -> Option<PyFormData> {
-        self.parser.next_part().map(Into::into)
-    }
-
-    fn next_event(&mut self) -> Option<PyMultipartPart> {
-        self.parser.next_event().map(Into::into)
+    fn finish(&self) -> PyResult<()> {
+        self.parser.finish()
     }
 }

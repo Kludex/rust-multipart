@@ -1,7 +1,6 @@
 use pyo3::prelude::*;
 
 mod bindings;
-mod form_data;
 mod headers;
 mod multipart;
 
@@ -9,7 +8,9 @@ mod multipart;
 fn parser(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<bindings::PyMultipartParser>()?;
     module.add_class::<bindings::PyMultipartState>()?;
-    module.add_class::<bindings::PyMultipartPart>()?;
-    module.add_class::<bindings::PyFormData>()?;
+    module.add_class::<bindings::PyPartBegin>()?;
+    module.add_class::<bindings::PyPartData>()?;
+    module.add_class::<bindings::PyPartEnd>()?;
+    module.add_function(wrap_pyfunction!(headers::parse_options_header, module)?)?;
     Ok(())
 }
