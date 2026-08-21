@@ -44,6 +44,25 @@ assert value == "form-data"
 assert parameters == {"name": "user"}
 ```
 
+Use `MultipartBuilder` to produce a `multipart/form-data` body on the client side:
+
+```python
+from rust_multipart import MultipartBuilder
+
+builder = MultipartBuilder(boundary=b"boundary")
+builder.add_field("user", b"Potato")
+builder.add_file("upload", "photo.png", b"\x89PNG...", content_type="image/png")
+body = builder.build()
+
+assert builder.content_type == "multipart/form-data; boundary=boundary"
+assert body.startswith(b'--boundary\r\nContent-Disposition: form-data; name="user"')
+```
+
+Omit `boundary` and the builder generates a random 32-character one, available as `builder.boundary`. Double quotes
+and line breaks in names and filenames are percent-escaped (`%22`, `%0D`, `%0A`), matching how browsers serialize
+form submissions. `add_part()` takes raw headers when you need full control, and `build()` appends the closing
+boundary and returns the complete body.
+
 ## Development
 
 ```bash

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from rust_multipart._multipart import (
+    MultipartBuilder,
     MultipartParser,
     MultipartState,
     PartBegin,
@@ -10,6 +11,7 @@ from rust_multipart._multipart import (
 )
 
 __all__ = (
+    "MultipartBuilder",
     "MultipartParser",
     "MultipartState",
     "PartBegin",

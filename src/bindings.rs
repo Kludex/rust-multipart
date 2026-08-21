@@ -1,5 +1,6 @@
 use pyo3::{prelude::*, types::PyBytes};
 
+use crate::builder::MultipartBuilder;
 use crate::multipart::{MultipartEvent, MultipartParser, MultipartState};
 
 #[pyclass(name = "MultipartState", eq, eq_int, skip_from_py_object)]
@@ -114,5 +115,48 @@ impl PyMultipartParser {
 
     fn finish(&self) -> PyResult<()> {
         self.parser.finish()
+    }
+}
+
+#[pyclass(name = "MultipartBuilder")]
+pub struct PyMultipartBuilder {
+    builder: MultipartBuilder,
+}
+
+#[pymethods]
+impl PyMultipartBuilder {
+    #[new]
+    #[pyo3(signature = (*, boundary = None))]
+    fn new(boundary: Option<Vec<u8>>) -> PyResult<Self> {
+        Ok(Self {
+            builder: MultipartBuilder::new(boundary)?,
+        })
+    }
+
+    #[getter]
+    fn boundary<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, self.builder.boundary())
+    }
+
+    #[getter]
+    fn content_type(&self) -> String {
+        self.builder.content_type()
+    }
+
+    fn add_part(&mut self, headers: Vec<(Vec<u8>, Vec<u8>)>, data: &[u8]) -> PyResult<()> {
+        self.builder.add_part(&headers, data)
+    }
+
+    fn add_field(&mut self, name: &str, value: &[u8]) -> PyResult<()> {
+        self.builder.add_field(name, value)
+    }
+
+    #[pyo3(signature = (name, filename, data, *, content_type = None))]
+    fn add_file(&mut self, name: &str, filename: &str, data: &[u8], content_type: Option<&str>) -> PyResult<()> {
+        self.builder.add_file(name, filename, data, content_type)
+    }
+
+    fn build<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.builder.build()?))
     }
 }

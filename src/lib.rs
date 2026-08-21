@@ -1,12 +1,14 @@
 use pyo3::prelude::*;
 
 mod bindings;
+mod builder;
 mod headers;
 mod multipart;
 
 #[pymodule]
 fn _multipart(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<bindings::PyMultipartParser>()?;
+    module.add_class::<bindings::PyMultipartBuilder>()?;
     module.add_class::<bindings::PyMultipartState>()?;
     module.add_class::<bindings::PyPartBegin>()?;
     module.add_class::<bindings::PyPartData>()?;
