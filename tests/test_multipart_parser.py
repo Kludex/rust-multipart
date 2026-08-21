@@ -252,3 +252,44 @@ def test_enforces_maximum_size() -> None:
 
     with pytest.raises(RuntimeError, match="Data exceeds maximum size"):
         parser.feed(b"d")
+
+
+def test_enforces_maximum_header_count() -> None:
+    parser = MultipartParser(b"boundary", max_header_count=2)
+    parser.feed(b"--boundary\r\nX-One: 1\r\nX-Two: 2\r\n")
+
+    with pytest.raises(RuntimeError, match="Part exceeds maximum header count"):
+        parser.feed(b"X-Three: 3\r\n")
+
+
+def test_enforces_maximum_header_size_on_complete_line() -> None:
+    parser = MultipartParser(b"boundary", max_header_size=16)
+
+    with pytest.raises(RuntimeError, match="Header line exceeds maximum size"):
+        parser.feed(b"--boundary\r\nX-Padding: " + b"x" * 16 + b"\r\n")
+
+
+def test_enforces_maximum_header_size_while_streaming() -> None:
+    parser = MultipartParser(b"boundary", max_header_size=16)
+    parser.feed(b"--boundary\r\nX-Padding: ")
+
+    with pytest.raises(RuntimeError, match="Header line exceeds maximum size"):
+        parser.feed(b"x" * 16)
+
+
+def test_header_size_limit_allows_crlf_split_across_chunks() -> None:
+    line = b"Content-Disposition: form-data; name=field"
+    parser = MultipartParser(b"boundary", max_header_size=len(line))
+    parser.feed(b"--boundary\r\n" + line + b"\r")
+    events = parser.feed(b"\n\r\nhi\r\n--boundary--")
+
+    parser.finish()
+    assert isinstance(events[0], PartBegin)
+
+
+def test_header_limits_allow_boundary_values() -> None:
+    parser = MultipartParser(b"boundary", max_header_count=1, max_header_size=42)
+    events = parser.feed(b"--boundary\r\nContent-Disposition: form-data; name=field\r\n\r\nhi\r\n--boundary--")
+
+    parser.finish()
+    assert isinstance(events[0], PartBegin)
