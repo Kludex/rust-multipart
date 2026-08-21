@@ -216,6 +216,8 @@ def test_rejects_malformed_headers() -> None:
     malformed = [
         (b"Header without colon\r\n", "Malformed header"),
         (b": value\r\n", "Missing header name"),
+        (b"Content-Disposition: form-data; name=a\rX-Smuggle: b\r\n", "Invalid line break in header"),
+        (b"X: y\nZ: w\r\n", "Invalid line break in header"),
     ]
 
     for header, message in malformed:
