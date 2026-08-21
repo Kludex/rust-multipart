@@ -71,6 +71,7 @@ from rust_multipart import MultipartBuilder
 
 builder = MultipartBuilder(boundary=b"boundary")
 
+
 def iter_body():
     yield builder.render_file("upload", "movie.mp4", content_type="video/mp4")
     with open("movie.mp4", "rb") as file:
