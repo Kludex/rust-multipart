@@ -277,6 +277,16 @@ def test_enforces_maximum_header_size_while_streaming() -> None:
         parser.feed(b"x" * 16)
 
 
+def test_header_size_limit_allows_crlf_split_across_chunks() -> None:
+    line = b"Content-Disposition: form-data; name=field"
+    parser = MultipartParser(b"boundary", max_header_size=len(line))
+    parser.feed(b"--boundary\r\n" + line + b"\r")
+    events = parser.feed(b"\n\r\nhi\r\n--boundary--")
+
+    parser.finish()
+    assert isinstance(events[0], PartBegin)
+
+
 def test_header_limits_allow_boundary_values() -> None:
     parser = MultipartParser(b"boundary", max_header_count=1, max_header_size=42)
     events = parser.feed(b"--boundary\r\nContent-Disposition: form-data; name=field\r\n\r\nhi\r\n--boundary--")

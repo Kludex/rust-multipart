@@ -182,7 +182,9 @@ impl MultipartParser {
         if self.buffer.contains(&b'\n') {
             return Err(PyValueError::new_err("Invalid line break in header"));
         }
-        if self.buffer.len() > self.max_header_size {
+        // Tolerate one buffered `\r` so a line of exactly `max_header_size` bytes survives a CRLF split across chunks.
+        let pending = self.buffer.len() - usize::from(self.buffer.ends_with(b"\r"));
+        if pending > self.max_header_size {
             return Err(PyRuntimeError::new_err("Header line exceeds maximum size."));
         }
         Ok(false)
