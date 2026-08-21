@@ -42,8 +42,9 @@ pub struct MultipartParser {
     buffer: Vec<u8>,
     dash_boundary: Vec<u8>,
     delimiter_length: usize,
-    dash_boundary_finder: memmem::Finder<'static>,
-    delimiter_finder: memmem::Finder<'static>,
+    // Boxed: the x86_64 SIMD searcher is over-aligned beyond what Python's object allocator guarantees.
+    dash_boundary_finder: Box<memmem::Finder<'static>>,
+    delimiter_finder: Box<memmem::Finder<'static>>,
     size: usize,
     current_headers: Vec<(Vec<u8>, Vec<u8>)>,
 }
@@ -57,8 +58,8 @@ impl MultipartParser {
 
         let dash_boundary = [b"--".as_slice(), &boundary].concat();
         let delimiter = [CRLF, dash_boundary.as_slice()].concat();
-        let dash_boundary_finder = memmem::Finder::new(&dash_boundary).into_owned();
-        let delimiter_finder = memmem::Finder::new(&delimiter).into_owned();
+        let dash_boundary_finder = Box::new(memmem::Finder::new(&dash_boundary).into_owned());
+        let delimiter_finder = Box::new(memmem::Finder::new(&delimiter).into_owned());
         Ok(Self {
             max_size,
             state: MultipartState::Preamble,
