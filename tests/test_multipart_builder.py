@@ -56,9 +56,7 @@ def test_escapes_name_and_filename() -> None:
     builder = MultipartBuilder(boundary=b"boundary")
     builder.add_file('a"b\r\n', 'file"\\\x1b\x07.txt', b"data")
     [(headers, _)] = parse(builder.build(), b"boundary")
-    assert headers == [
-        (b"Content-Disposition", b'form-data; name="a%22b%0D%0A"; filename="file%22\\\\\x1b%07.txt"')
-    ]
+    assert headers == [(b"Content-Disposition", b'form-data; name="a%22b%0D%0A"; filename="file%22\\\\\x1b%07.txt"')]
 
 
 def test_empty_body() -> None:
