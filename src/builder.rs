@@ -1,8 +1,12 @@
 //! Builder for [RFC 7578](https://www.rfc-editor.org/rfc/rfc7578.html) `multipart/form-data` bodies.
 //!
-//! The builder is the inverse of the parser: it serializes parts into a body an HTTP client can send. `add_part()`
-//! takes raw headers, mirroring the parser's raw events; `add_field()` and `add_file()` render `Content-Disposition`
-//! with WHATWG-style percent escaping for names and filenames.
+//! The builder is the inverse of the parser and works at two levels. The eager level (`add_field`, `add_file`,
+//! `add_part`, `build`) accumulates a complete body. The streaming level (`render_field`, `render_file`,
+//! `render_part`, `closing`) returns each part's prologue as bytes so callers can interleave file data from
+//! disk without buffering it - the shape HTTP clients like httpx need for chunked uploads.
+//!
+//! Names and filenames are escaped with the WHATWG HTML5 form rules (`"` and C0 controls to `%XX`, `\` doubled),
+//! matching how browsers and httpx serialize form submissions.
 
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
@@ -32,8 +36,11 @@ fn escape(value: &str) -> String {
     for character in value.chars() {
         match character {
             '"' => escaped.push_str("%22"),
-            '\r' => escaped.push_str("%0D"),
-            '\n' => escaped.push_str("%0A"),
+            '\\' => escaped.push_str("\\\\"),
+            '\x1b' => escaped.push(character),
+            control if (control as u32) <= 0x1f => {
+                escaped.push_str(&format!("%{:02X}", control as u32));
+            }
             _ => escaped.push(character),
         }
     }
@@ -75,10 +82,15 @@ impl MultipartBuilder {
         }
     }
 
-    pub fn add_part(&mut self, headers: &[(Vec<u8>, Vec<u8>)], data: &[u8]) -> PyResult<()> {
-        if self.finished {
-            return Err(PyRuntimeError::new_err("Builder already finished."));
+    fn disposition(name: &str, filename: Option<&str>) -> Vec<u8> {
+        let mut disposition = format!("form-data; name=\"{}\"", escape(name)).into_bytes();
+        if let Some(filename) = filename {
+            disposition.extend_from_slice(format!("; filename=\"{}\"", escape(filename)).as_bytes());
         }
+        disposition
+    }
+
+    pub fn render_part(&self, headers: &[(Vec<u8>, Vec<u8>)]) -> PyResult<Vec<u8>> {
         for (name, value) in headers {
             if name.is_empty() {
                 return Err(PyValueError::new_err("Missing header name"));
@@ -90,33 +102,64 @@ impl MultipartBuilder {
                 return Err(PyValueError::new_err("Invalid line break in header value"));
             }
         }
-        self.buffer.extend_from_slice(b"--");
-        self.buffer.extend_from_slice(&self.boundary);
-        self.buffer.extend_from_slice(CRLF);
+        let mut prologue = Vec::new();
+        prologue.extend_from_slice(b"--");
+        prologue.extend_from_slice(&self.boundary);
+        prologue.extend_from_slice(CRLF);
         for (name, value) in headers {
-            self.buffer.extend_from_slice(name);
-            self.buffer.extend_from_slice(b": ");
-            self.buffer.extend_from_slice(value);
-            self.buffer.extend_from_slice(CRLF);
+            prologue.extend_from_slice(name);
+            prologue.extend_from_slice(b": ");
+            prologue.extend_from_slice(value);
+            prologue.extend_from_slice(CRLF);
         }
-        self.buffer.extend_from_slice(CRLF);
+        prologue.extend_from_slice(CRLF);
+        Ok(prologue)
+    }
+
+    pub fn render_field(&self, name: &str) -> PyResult<Vec<u8>> {
+        self.render_part(&[(b"Content-Disposition".to_vec(), Self::disposition(name, None))])
+    }
+
+    pub fn render_file(&self, name: &str, filename: &str, content_type: Option<&str>) -> PyResult<Vec<u8>> {
+        let mut headers = vec![(b"Content-Disposition".to_vec(), Self::disposition(name, Some(filename)))];
+        if let Some(content_type) = content_type {
+            headers.push((b"Content-Type".to_vec(), content_type.as_bytes().to_vec()));
+        }
+        self.render_part(&headers)
+    }
+
+    pub fn closing(&self) -> Vec<u8> {
+        let mut closing = Vec::with_capacity(self.boundary.len() + 6);
+        closing.extend_from_slice(b"--");
+        closing.extend_from_slice(&self.boundary);
+        closing.extend_from_slice(b"--");
+        closing.extend_from_slice(CRLF);
+        closing
+    }
+
+    fn append(&mut self, prologue: Vec<u8>, data: &[u8]) -> PyResult<()> {
+        if self.finished {
+            return Err(PyRuntimeError::new_err("Builder already finished."));
+        }
+        self.buffer.extend_from_slice(&prologue);
         self.buffer.extend_from_slice(data);
         self.buffer.extend_from_slice(CRLF);
         Ok(())
     }
 
+    pub fn add_part(&mut self, headers: &[(Vec<u8>, Vec<u8>)], data: &[u8]) -> PyResult<()> {
+        let prologue = self.render_part(headers)?;
+        self.append(prologue, data)
+    }
+
     pub fn add_field(&mut self, name: &str, value: &[u8]) -> PyResult<()> {
-        let disposition = format!("form-data; name=\"{}\"", escape(name));
-        self.add_part(&[(b"Content-Disposition".to_vec(), disposition.into_bytes())], value)
+        let prologue = self.render_field(name)?;
+        self.append(prologue, value)
     }
 
     pub fn add_file(&mut self, name: &str, filename: &str, data: &[u8], content_type: Option<&str>) -> PyResult<()> {
-        let disposition = format!("form-data; name=\"{}\"; filename=\"{}\"", escape(name), escape(filename));
-        let mut headers = vec![(b"Content-Disposition".to_vec(), disposition.into_bytes())];
-        if let Some(content_type) = content_type {
-            headers.push((b"Content-Type".to_vec(), content_type.as_bytes().to_vec()));
-        }
-        self.add_part(&headers, data)
+        let prologue = self.render_file(name, filename, content_type)?;
+        self.append(prologue, data)
     }
 
     pub fn build(&mut self) -> PyResult<Vec<u8>> {
@@ -124,10 +167,7 @@ impl MultipartBuilder {
             return Err(PyRuntimeError::new_err("Builder already finished."));
         }
         self.finished = true;
-        self.buffer.extend_from_slice(b"--");
-        self.buffer.extend_from_slice(&self.boundary);
-        self.buffer.extend_from_slice(b"--");
-        self.buffer.extend_from_slice(CRLF);
+        self.buffer.extend_from_slice(&self.closing());
         Ok(std::mem::take(&mut self.buffer))
     }
 }

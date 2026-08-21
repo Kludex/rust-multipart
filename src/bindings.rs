@@ -147,6 +147,23 @@ impl PyMultipartBuilder {
         self.builder.add_part(&headers, data)
     }
 
+    fn render_part<'py>(&self, py: Python<'py>, headers: Vec<(Vec<u8>, Vec<u8>)>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.builder.render_part(&headers)?))
+    }
+
+    fn render_field<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.builder.render_field(name)?))
+    }
+
+    #[pyo3(signature = (name, filename, *, content_type = None))]
+    fn render_file<'py>(&self, py: Python<'py>, name: &str, filename: &str, content_type: Option<&str>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new(py, &self.builder.render_file(name, filename, content_type)?))
+    }
+
+    fn closing<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.builder.closing())
+    }
+
     fn add_field(&mut self, name: &str, value: &[u8]) -> PyResult<()> {
         self.builder.add_field(name, value)
     }

@@ -58,10 +58,31 @@ assert builder.content_type == "multipart/form-data; boundary=boundary"
 assert body.startswith(b'--boundary\r\nContent-Disposition: form-data; name="user"')
 ```
 
-Omit `boundary` and the builder generates a random 32-character one, available as `builder.boundary`. Double quotes
-and line breaks in names and filenames are percent-escaped (`%22`, `%0D`, `%0A`), matching how browsers serialize
-form submissions. `add_part()` takes raw headers when you need full control, and `build()` appends the closing
-boundary and returns the complete body.
+Omit `boundary` and the builder generates a random 32-character one, available as `builder.boundary`. Names and
+filenames are escaped with the WHATWG HTML5 form rules (`"` and control characters become `%XX`, `\` is doubled),
+matching how browsers and HTTP clients like HTTPX serialize form submissions. `add_part()` takes raw headers when
+you need full control, and `build()` appends the closing boundary and returns the complete body.
+
+For streaming uploads, render each part's prologue and interleave the data yourself - file contents never need to
+pass through the builder:
+
+```python
+from rust_multipart import MultipartBuilder
+
+builder = MultipartBuilder(boundary=b"boundary")
+
+def iter_body():
+    yield builder.render_file("upload", "movie.mp4", content_type="video/mp4")
+    with open("movie.mp4", "rb") as file:
+        while chunk := file.read(64 * 1024):
+            yield chunk
+    yield b"\r\n"
+    yield builder.closing()
+```
+
+`render_field()`, `render_file()`, and `render_part()` return the `--boundary` line plus headers for one part;
+yield the part data and a trailing `\r\n` after each, then `closing()` once. The streaming methods validate
+without mutating the builder, so the body can be re-rendered for retries.
 
 ## Development
 

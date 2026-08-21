@@ -54,9 +54,11 @@ def test_content_type() -> None:
 
 def test_escapes_name_and_filename() -> None:
     builder = MultipartBuilder(boundary=b"boundary")
-    builder.add_file('a"b\r\n', 'file"\r\n.txt', b"data")
+    builder.add_file('a"b\r\n', 'file"\\\x1b\x07.txt', b"data")
     [(headers, _)] = parse(builder.build(), b"boundary")
-    assert headers == [(b"Content-Disposition", b'form-data; name="a%22b%0D%0A"; filename="file%22%0D%0A.txt"')]
+    assert headers == [
+        (b"Content-Disposition", b'form-data; name="a%22b%0D%0A"; filename="file%22\\\\\x1b%07.txt"')
+    ]
 
 
 def test_empty_body() -> None:
@@ -89,3 +91,33 @@ def test_rejects_use_after_build() -> None:
         builder.add_field("a", b"1")
     with pytest.raises(RuntimeError, match="finished"):
         builder.build()
+
+
+def test_streaming_render_matches_eager_build() -> None:
+    eager = MultipartBuilder(boundary=b"boundary")
+    eager.add_field("name", b"value")
+    eager.add_file("upload", "photo.png", b"\x89PNG...", content_type="image/png")
+    eager.add_part([(b"X-Custom", b"yes")], b"raw part")
+
+    streaming = MultipartBuilder(boundary=b"boundary")
+    chunks = [
+        streaming.render_field("name"),
+        b"value",
+        b"\r\n",
+        streaming.render_file("upload", "photo.png", content_type="image/png"),
+        b"\x89PNG",
+        b"...",
+        b"\r\n",
+        streaming.render_part([(b"X-Custom", b"yes")]),
+        b"raw part",
+        b"\r\n",
+        streaming.closing(),
+    ]
+    assert b"".join(chunks) == eager.build()
+
+
+def test_render_validates_headers_without_mutating() -> None:
+    builder = MultipartBuilder(boundary=b"boundary")
+    with pytest.raises(ValueError, match="Invalid line break in header value"):
+        builder.render_part([(b"Name", b"bad\r\nvalue")])
+    assert builder.build() == b"--boundary--\r\n"
